@@ -1,0 +1,769 @@
+﻿using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Configuration;
+using System.Data;
+using System.Data.SqlClient;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.ServiceProcess;
+using System.Text;
+using System.Threading.Tasks;
+using System.Timers;
+
+namespace VMPPortalBatchService
+{
+    public partial class Service1 : ServiceBase
+    {
+        public Service1()
+        {
+            InitializeComponent();
+        }
+
+        public static string conStr = ConfigurationManager.ConnectionStrings["vmpconStr"].ConnectionString;
+        protected override void OnStart(string[] args)
+        {
+            try
+            {
+                FetchPortalResponse();
+                Timer aTimer;
+                aTimer = new System.Timers.Timer();
+
+                // Hook up the Elapsed event for the timer.
+                aTimer.Elapsed += new ElapsedEventHandler(OnTimedEvent);
+
+                // Set the Interval 
+                aTimer.Interval = Convert.ToInt64(ConfigurationManager.AppSettings["Interval"]);
+                aTimer.Enabled = true;
+            }
+            catch (Exception ex)
+            {
+                this.WriteToFile("Error : " + ex.InnerException.Message.ToString().Substring(0, 500),"Error");
+                LogError("Error While loading data from Portal.", ex.InnerException.Message.ToString().Substring(0, 500));
+            }
+        }
+
+        private static void OnTimedEvent(object source, ElapsedEventArgs e)
+        {
+            Service1 objReadPortalResponse = new Service1();
+            objReadPortalResponse.FetchPortalResponse();
+        }
+        private async void FetchPortalResponse()
+        {
+            this.WriteToFile("VMP Batch Process Started {0}","Log");
+            try
+            {
+                LogActivity("VMP Batch Process Started !!!");
+                //  Uri geturi = new Uri("http://test-aaimacd.pantheonsite.io/api/application?_format=xml"); //replace your url  
+                //Uri geturi = new Uri(ConfigurationManager.AppSettings["PortalJsonURL"]);
+                Uri geturi = new Uri(ConfigurationManager.AppSettings["PortalJsonURL"]); //Response from Portal in Json Format
+                System.Net.Http.HttpClient client = new System.Net.Http.HttpClient();
+                var byteArray = Encoding.ASCII.GetBytes(ConfigurationManager.AppSettings["ByteArray"]);
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(byteArray));
+                System.Net.Http.HttpResponseMessage responseGet = await client.GetAsync(geturi);
+                string response = await responseGet.Content.ReadAsStringAsync();
+                string path = ConfigurationManager.AppSettings["JsonFilePath"] + DateTime.Now.ToString("yyyyMdd") + ".json";
+                File.WriteAllText(path, response);
+                this.WriteToFile("JSON File Saved in : "+ path, "Log");
+                LoadApplicationsOnStageDB(LoadJson(path));
+                LogActivity("VMP Batch Process Completed !!!");
+                this.WriteToFile("VMP Batch Process Completed {0}","Log");
+            }
+            catch (Exception ex)
+            {
+                this.WriteToFile("Error : "+ ex.InnerException.ToString(),"Error");
+                LogError("Error While loading data from Portal.", ex.InnerException.ToString().Substring(0, 500));
+            }
+        }
+
+        private void LoadApplicationsOnStageDB(JsonSchema.Applications applications)
+        {
+
+            foreach (JsonSchema.Vendor vendor in applications.ApplicationList)
+            {
+                Int64 AppId = 0;
+
+                try
+                {
+                    using (SqlConnection con = new SqlConnection(conStr))
+                    {
+                        SqlDataAdapter adapter;
+                        using (SqlCommand cmd = new SqlCommand("proc_insertApplication", con))
+                        {
+                            cmd.CommandType = CommandType.StoredProcedure;
+
+                            cmd.Parameters.Add("@uuid", SqlDbType.VarChar).Value = vendor.UUID;
+                            cmd.Parameters.Add("@vendorName", SqlDbType.VarChar).Value = vendor.VendorName == null ? string.Empty : vendor.VendorName;
+                            cmd.Parameters.Add("@businessName", SqlDbType.VarChar).Value = vendor.BusinessName == null ? string.Empty : vendor.BusinessName;
+                            cmd.Parameters.Add("@productDescription", SqlDbType.VarChar).Value = vendor.ProductDescription == null ? string.Empty : vendor.ProductDescription;
+                            cmd.Parameters.Add("@county", SqlDbType.VarChar).Value = vendor.County == null ? string.Empty : vendor.County;
+                            cmd.Parameters.Add("@telephone", SqlDbType.VarChar).Value = vendor.Telephone == null ? string.Empty : vendor.Telephone;
+                            cmd.Parameters.Add("@emailId", SqlDbType.VarChar).Value = vendor.EMail == null ? string.Empty : vendor.EMail;
+                            cmd.Parameters.Add("@fax", SqlDbType.VarChar).Value = vendor.Fax == null ? string.Empty : vendor.Fax;
+                            cmd.Parameters.Add("@webAddress", SqlDbType.VarChar).Value = vendor.WebAddress == null ? string.Empty : vendor.WebAddress;
+                            try
+                            {
+                                DataSet ds = new DataSet();
+                                con.Open();
+                                adapter = new SqlDataAdapter(cmd);
+                                adapter.Fill(ds);
+                                if(ds.Tables[0].Rows.Count >0)
+                                {
+                                    AppId = Int64.Parse(ds.Tables[0].Rows[0][0].ToString());
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                this.WriteToFile("Error While inserting in Vendor Details Table: " + ex.InnerException.Message.ToString(), "Error");
+                            }
+                            finally
+                            {
+                                con.Close();
+                            }
+                            if (AppId > 0)
+                            {
+                                UpdateFirmBusinessStructure(AppId, vendor);
+                                UpdateOwnerInfo(AppId, vendor.owner);
+                            }
+                        }
+                    }
+                }
+
+                catch (Exception ex)
+                {
+                    this.WriteToFile("Error While inserting in Vendor Details Table: " + ex.InnerException.Message.ToString(), "Error");
+                }
+
+            }
+        }
+
+        private void UpdateOwnerInfo(long appId, List<JsonSchema.Owners> owner)
+        {
+            try
+            {
+                DataTable dtOwners = new DataTable();
+                dtOwners.Columns.Add("appID");
+                dtOwners.Columns.Add("ownerFirstName");
+                dtOwners.Columns.Add("ownerLastName");
+                dtOwners.Columns.Add("address");
+                dtOwners.Columns.Add("city");
+                dtOwners.Columns.Add("State");
+                dtOwners.Columns.Add("zipCode");
+                dtOwners.Columns.Add("Phone");
+                dtOwners.Columns.Add("otherPhone");
+                dtOwners.Columns.Add("percentageOwnership");
+                dtOwners.Columns.Add("citizen");
+                dtOwners.Columns.Add("Asian");
+                dtOwners.Columns.Add("Black");
+                dtOwners.Columns.Add("Hispanic");
+                dtOwners.Columns.Add("AmericanIndian");
+                dtOwners.Columns.Add("IndiginousAmerican");
+                dtOwners.Columns.Add("TribalID");
+                dtOwners.Columns.Add("NumberOfShares");
+                dtOwners.Columns.Add("CurrentPosition ");
+
+                DataTable dtSecFirms = new DataTable();
+                dtSecFirms.Columns.Add("appID");
+                dtSecFirms.Columns.Add("ownerFirstName");
+                dtSecFirms.Columns.Add("ownerLastName");
+                dtSecFirms.Columns.Add("FirmName");
+                dtSecFirms.Columns.Add("FirmAddress");
+                dtSecFirms.Columns.Add("FirmPercentageOwnership ");
+                dtSecFirms.Columns.Add("FirmGrossRevenue");
+
+                foreach (JsonSchema.Owners Owner in owner)
+                {
+                    dtOwners.Rows.Add(appId, Owner.FirstName, Owner.LastName, Owner.Address, Owner.City, Owner.State, Owner.ZipCode, Owner.Phone, Owner.OtherPhone, Owner.PercentageOwnership,
+                        Owner.Citizen, Owner.Asian, Owner.Black, Owner.Hispanic, Owner.AmericanIndian, Owner.IndiginousAmerican, Owner.TribalID, Owner.NoOfSharesOwned, Owner.CurrentPosition);
+                    foreach (JsonSchema.SecondaryFirms secFirms in Owner.SecondaryFirm)
+                    {
+                        dtSecFirms.Rows.Add(appId, Owner.FirstName, Owner.LastName, secFirms.FirmName, secFirms.FirmAddress, secFirms.FirmPercentageOwnership, secFirms.FirmGrossRevenue);
+                    }
+                }
+                if (dtOwners.Rows.Count != 0)
+                {
+                    UpdateOwners("[proc_UpdateOwners]", "@owners", dtOwners, appId);
+                }
+                if (dtSecFirms.Rows.Count != 0)
+                {
+                    UpdateSecFirms("[proc_UpdateSecFirms]", "@secFirms", dtSecFirms, appId);
+                    UpdateOwnerId(appId);
+                }
+
+            }
+            catch (Exception ex)
+            {
+                this.WriteToFile("Error While inserting Owner details - App ID: " + appId + " - " + ex.Message.ToString(), "Error");
+            }
+
+        }
+        private void UpdateOwners(string procedureName, string paramName, DataTable dtOwners, Int64 appId)
+        {
+            SqlConnection conn = new SqlConnection(conStr);
+            SqlCommand cmd = new SqlCommand(procedureName, conn);
+            cmd.CommandType = CommandType.StoredProcedure;
+            SqlParameter dtparam = cmd.Parameters.AddWithValue(paramName, dtOwners);
+            dtparam.SqlDbType = SqlDbType.Structured;
+            try
+            {
+                conn.Open();
+                cmd.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                this.WriteToFile("Error While inserting Owners - App ID: " + appId + " - " + ex.InnerException.Message.ToString(), "Error");
+            }
+            finally
+            {
+                conn.Close();
+            }
+
+        }
+
+        private void UpdateSecFirms(string procedureName, string paramName, DataTable dtSecFirms, Int64 appId)
+        {
+            SqlConnection conn = new SqlConnection(conStr);
+            SqlCommand cmd = new SqlCommand(procedureName, conn);
+            cmd.CommandType = CommandType.StoredProcedure;
+            SqlParameter dtparam = cmd.Parameters.AddWithValue(paramName, dtSecFirms);
+            dtparam.SqlDbType = SqlDbType.Structured;
+            try
+            {
+                conn.Open();
+                cmd.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                this.WriteToFile("Error While inserting Secondary Firms - App ID: " + appId + " - " + ex.InnerException.Message.ToString(), "Error");
+            }
+            finally
+            {
+                conn.Close();
+            }
+
+        }
+
+        private void UpdateOwnerId(long appId)
+        {
+            using (SqlConnection con = new SqlConnection(conStr))
+            {
+                try
+                {
+                    using (SqlCommand cmd = new SqlCommand("proc_UpdateOwnerID", con))
+                    {
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Parameters.Add("@appId", SqlDbType.BigInt).Value = appId;
+                        con.Open();
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.WriteToFile("Error While inserting in Firm and Business Structure - App ID: " + appId + " - " + ex.Message.ToString(), "Error");
+                }
+            }
+        }
+
+        private void UpdateFirmBusinessStructure(long appId, JsonSchema.Vendor vendor)
+        {
+            using (SqlConnection con = new SqlConnection(conStr))
+            {
+                try
+                {
+                    SqlDataAdapter adapter;
+                    Int64 FirmId = 0;
+                    using (SqlCommand cmd = new SqlCommand("proc_InsertFirmBusStructure", con))
+                    {
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Parameters.Add("@uuid", SqlDbType.VarChar).Value = vendor.UUID;
+                        cmd.Parameters.Add("@appID", SqlDbType.BigInt).Value = appId;
+                        if (string.IsNullOrEmpty(vendor.CurrentOwnershipDate))
+                        {
+                            cmd.Parameters.Add("@dateCurrentOwnership", SqlDbType.Date).Value = DBNull.Value;
+                        }
+                        else
+                        {
+                            cmd.Parameters.Add("@dateCurrentOwnership", SqlDbType.Date).Value = vendor.CurrentOwnershipDate;
+                        }
+                        if (string.IsNullOrEmpty(vendor.RegisteredDate))
+                        {
+                            cmd.Parameters.Add("@dateRegistered", SqlDbType.Date).Value = DBNull.Value;
+                        }
+                        else
+                        {
+                            cmd.Parameters.Add("@dateRegistered", SqlDbType.Date).Value = vendor.RegisteredDate;
+                        }
+                        cmd.Parameters.Add("@hrCertificate", SqlDbType.VarChar).Value = vendor.HRCertificate == null ? string.Empty : vendor.HRCertificate;
+                        cmd.Parameters.Add("@methodAcquis", SqlDbType.VarChar).Value = vendor.MethodOfAquisition == null ? string.Empty : vendor.MethodOfAquisition;
+                        cmd.Parameters.Add("@fullTimeEmp", SqlDbType.VarChar).Value = vendor.FullTimeEmployees;
+                        cmd.Parameters.Add("@mnTaxId", SqlDbType.VarChar).Value = vendor.MNTaxID == null ? string.Empty : vendor.MNTaxID;
+                        cmd.Parameters.Add("@federalTaxId", SqlDbType.VarChar).Value = vendor.FederalTaxID == null ? string.Empty : vendor.FederalTaxID;
+                        cmd.Parameters.Add("@nonProfit", SqlDbType.Bit).Value = vendor.NonProfit;
+                        cmd.Parameters.Add("@rehabFac", SqlDbType.Bit).Value = vendor.Rehabilitation;
+                        cmd.Parameters.Add("@llc", SqlDbType.Bit).Value = vendor.LLCLLP;
+                        cmd.Parameters.Add("@proprietorship", SqlDbType.Bit).Value = vendor.Proprietorship;
+                        cmd.Parameters.Add("@partnership", SqlDbType.Bit).Value = vendor.Partnership;
+                        cmd.Parameters.Add("@corporation", SqlDbType.Bit).Value = vendor.Corporation;
+                        cmd.Parameters.Add("@DBE", SqlDbType.Bit).Value = vendor.DBE;
+                        cmd.Parameters.Add("@WBENC", SqlDbType.Bit).Value = vendor.WBENC;
+                        cmd.Parameters.Add("@NCMSDC", SqlDbType.Bit).Value = vendor.NCMSDC;
+                        cmd.Parameters.Add("@NGLCC", SqlDbType.Bit).Value = vendor.NGLCC;
+                        DataSet ds = new DataSet();
+                        con.Open();
+                        adapter = new SqlDataAdapter(cmd);
+                        adapter.Fill(ds);
+                        FirmId = Int64.Parse(ds.Tables[0].Rows[0][0].ToString());
+
+                        DataTable dtGrossRevenue = new DataTable();
+                        dtGrossRevenue.Columns.Add("firmId");
+                        dtGrossRevenue.Columns.Add("grossYear");
+                        dtGrossRevenue.Columns.Add("grossRevenue");
+                        dtGrossRevenue.Rows.Add(FirmId, vendor.GrossYear1, vendor.GrossRevenue1);
+                        dtGrossRevenue.Rows.Add(FirmId, vendor.GrossYear2, vendor.GrossRevenue2);
+                        dtGrossRevenue.Rows.Add(FirmId, vendor.GrossYear3, vendor.GrossRevenue3);
+
+                        if (dtGrossRevenue.Rows.Count != 0)
+                        {
+                            UpdateGrossRevenue("[proc_VendorGrossRevenue]", "@grossRevArray", dtGrossRevenue, appId);
+                        }
+
+                        this.WriteToFile("Inserted in Firm and Business Structure Sucessfully", "Log");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.WriteToFile("Error While inserting in Firm and Business Structure - App ID: " + appId + " - " + ex.InnerException.Message.ToString(), "Error");
+                }
+                finally
+                {
+                    con.Close();
+                }
+            }
+        }
+
+        private void UpdateGrossRevenue(string procedureName, string paramName, DataTable dtGrossRevenue, Int64 appId)
+        {
+            SqlConnection conn = new SqlConnection(conStr);
+            SqlCommand cmd = new SqlCommand(procedureName, conn);
+            cmd.CommandType = CommandType.StoredProcedure;
+            SqlParameter dtparam = cmd.Parameters.AddWithValue(paramName, dtGrossRevenue);
+            dtparam.SqlDbType = SqlDbType.Structured;
+            try
+            {
+                conn.Open();
+                cmd.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                this.WriteToFile("Error While inserting Gross Revenue - App ID: " + appId + " - " + ex.InnerException.Message.ToString(), "Error");
+            }
+            finally
+            {
+                conn.Close();
+            }
+        }
+
+
+        protected override void OnStop()
+        {
+            this.WriteToFile("VMP Batch Process Stopped {0}","Log");
+        }
+        private void LogError(string errorMsg, string errorDescription)
+        {
+            SqlConnection sqlConnection = new SqlConnection(conStr);
+            string query = "INSERT INTO ErrorLog (errorMessage,errorDescription) VALUES(@errorMessage,@errorDescription)";
+            SqlCommand cmd = new SqlCommand(query, sqlConnection);
+            cmd.Parameters.AddWithValue("@errorMessage", errorMsg);
+            cmd.Parameters.AddWithValue("@errorDescription", errorDescription);
+            try
+            {
+                sqlConnection.Open();
+                cmd.ExecuteNonQuery();
+
+            }
+            catch (SqlException e)
+            {
+
+            }
+            finally
+            {
+                sqlConnection.Close();
+            }
+        }
+
+        private void LogActivity(string logMessage)
+        {
+            SqlConnection sqlConnection = new SqlConnection(conStr);
+            string query = "INSERT INTO ProcessLog (logMessage) VALUES(@logMessage)";
+            SqlCommand cmd = new SqlCommand(query, sqlConnection);
+            cmd.Parameters.AddWithValue("@logMessage", logMessage);
+
+            try
+            {
+                sqlConnection.Open();
+                cmd.ExecuteNonQuery();
+
+            }
+            catch (SqlException e)
+            {
+
+            }
+            finally
+            {
+                sqlConnection.Close();
+            }
+        }
+
+        public JsonSchema.Applications LoadJson(string url)
+        {
+            JsonSchema.Applications objApplications = new JsonSchema.Applications();
+            using (StreamReader r = new StreamReader(url))
+            {
+                string json = r.ReadToEnd();
+                dynamic array = JsonConvert.DeserializeObject(json);
+                foreach (dynamic application in array)
+                {
+                    try
+                    {
+                        JsonSchema.Vendor objVendor = new JsonSchema.Vendor();
+                        foreach (dynamic node in application)
+                        {
+                            foreach (dynamic childnode in node)
+                            {
+                                try
+                                {
+                                    string tagname = childnode.Name;
+                                    switch (tagname)
+                                    {
+                                        case "uuid":
+                                            try { objVendor.UUID = childnode.Value.value.Value; } catch { objVendor.UUID = string.Empty; }
+                                            break;
+                                        case "attachment_count":
+                                            try { objVendor.AttachmentCount = childnode.Value.Value; } catch { objVendor.AttachmentCount = 0; }
+                                            break;
+                                        case "attachments":
+                                            foreach (dynamic attachment in childnode.Value)
+                                            {
+                                                JsonSchema.Attachments objAttachment = new JsonSchema.Attachments();
+                                                try { objAttachment.AttachmentType = attachment.Value.attachment_category.value.label.Value; } catch { objAttachment.AttachmentType = string.Empty; }
+                                                try { objAttachment.AttachmentDescription = attachment.Value.description.value.value.Value; } catch { objAttachment.AttachmentDescription = string.Empty; }
+                                                try { objAttachment.AttachmentPath = attachment.Value.file.value.url.Value; } catch { objAttachment.AttachmentPath = string.Empty; }
+                                                //string path = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+                                                //string fileName = path+"\\loading.gif";
+                                                //WebClient myWebClient = new WebClient();
+                                                // myWebClient.DownloadFile(objAttachment.AttachmentPath, fileName); 
+                                                objVendor.AttachmentList.Add(objAttachment);
+                                            }
+                                            break;
+                                        case "dba_name":
+                                            try { objVendor.VendorName = childnode.Value.value.Value; } catch { objVendor.VendorName = string.Empty; }
+                                            break;
+                                        case "legal_firm_name":
+                                            try { objVendor.LegalFirmName = childnode.Value.value.Value; } catch { objVendor.LegalFirmName = string.Empty; }
+                                            break;
+                                        case "describe_activities":
+                                            try { objVendor.ProductDescription = childnode.Value.value.Value; } catch { objVendor.ProductDescription = string.Empty; }
+                                            break;
+                                        case "address":
+                                            try { objVendor.State = childnode.Last.value.administrative_area.Value; } catch { objVendor.State = string.Empty; }
+                                            try { objVendor.City = childnode.Last.value.locality.Value; } catch { objVendor.City = string.Empty; }
+                                            try { objVendor.Address = childnode.Last.value.address_line1.Value + " " + childnode.Last.value.address_line2.Value + " " + childnode.Last.value.address_line3.Value; } catch { objVendor.Address = string.Empty; }
+                                            try { objVendor.Zipcode = childnode.Last.value.postal_code.Value; } catch { objVendor.Zipcode = string.Empty; }
+                                            break;
+                                        case "county":
+                                            try { objVendor.County = childnode.Value.value.label.Value; } catch { objVendor.County = string.Empty; }
+                                            break;
+                                        case "business_telephone":
+                                            try { objVendor.Telephone = childnode.Value.value.Value; } catch { objVendor.Telephone = string.Empty; }
+                                            break;
+                                        case "business_email_address":
+                                            try { objVendor.EMail = childnode.Value.value.Value; } catch { objVendor.EMail = string.Empty; }
+                                            break;
+                                        case "business_website":
+                                            try { objVendor.WebAddress = childnode.Value.value.uri.Value; } catch { objVendor.WebAddress = string.Empty; }
+                                            break;
+                                        case "business_fax":
+                                            try { objVendor.Fax = childnode.Value.value.Value; } catch { objVendor.Fax = string.Empty; }
+                                            break;
+                                        case "registration_date":
+                                            try { objVendor.RegisteredDate = childnode.Value.value.Value; } catch { objVendor.RegisteredDate = string.Empty; }
+                                            break;
+                                        case "date_ownership_was_acquire":
+                                            try { objVendor.CurrentOwnershipDate = childnode.Value.value.Value; } catch { objVendor.CurrentOwnershipDate = string.Empty; }
+                                            break;
+                                        case "submitted":
+                                            try { objVendor.ApplicationDate = childnode.Value.value.Value; } catch { objVendor.ApplicationDate = string.Empty; }
+                                            break;
+                                        case "current_certifications":
+                                            try
+                                            {
+                                                for (int i = 0; i < childnode.Value.value.Count; i++)
+                                                {
+                                                    if (childnode.Value.value[i].value.Value == "State of Minnesota Human Rights – Workforce Certificate of Compliance")
+                                                    {
+                                                        objVendor.HRCertificate = "Yes";
+                                                    }
+                                                    else
+                                                    {
+                                                        objVendor.HRCertificate = "No";
+                                                    }
+                                                    if (childnode.Value.value[i].value.Value == "MnUCP (any certifying member agency)")
+                                                    {
+                                                        objVendor.DBE = true;
+                                                    }
+                                                    else if (childnode.Value.value[i].value.Value == "NMSDC (National Minority Supplier Development Council, and regional affiliate councils)")
+                                                    {
+                                                        objVendor.NCMSDC = true;
+                                                    }
+                                                    else if (childnode.Value.value[i].value.Value == "NGLCC (National Gay and Lesbian Chamber of Commerce)")
+                                                    {
+                                                        objVendor.NGLCC = true;
+                                                    }
+                                                    else if (childnode.Value.value[i].value.Value == "WBENC (Women Business Enterprise National Council)")
+                                                    {
+                                                        objVendor.WBENC = true;
+                                                    }
+                                                }
+                                            }
+                                            catch
+                                            {
+
+                                            }
+                                            break;
+                                        case "method_of_acquisition":
+                                            try
+                                            {
+                                                if (childnode.Value.value.Value == "Started new business")
+                                                {
+                                                    objVendor.MethodOfAquisition = "Founded";
+                                                }
+                                                else if (childnode.Value.value.Value == "Bought existing business" || childnode.Value.value.Value == "Inherited business" || childnode.Value.value.Value == "Merger or consolidation")
+                                                {
+                                                    objVendor.MethodOfAquisition = "Existing";
+                                                }
+                                                else if (childnode.Value.value.Value == "Secured concession")
+                                                {
+                                                    objVendor.MethodOfAquisition = "Franchise";
+                                                }
+                                            }
+                                            catch
+                                            {
+
+                                            }
+                                            break;
+                                        case "full_time":
+                                            try { objVendor.FullTimeEmployees = childnode.Value.value.Value; } catch { objVendor.FullTimeEmployees = string.Empty; }
+                                            break;
+                                        case "state_tax_id":
+                                            try { objVendor.MNTaxID = childnode.Value.value.Value; } catch { objVendor.MNTaxID = string.Empty; }
+                                            break;
+                                        case "federal_tax_id_ein":
+                                            try { objVendor.FederalTaxID = childnode.Value.value.Value; } catch { objVendor.FederalTaxID = string.Empty; }
+                                            break;
+                                        case "specify_the_gross_receipts":
+                                            try
+                                            {
+                                                for (int i = 0; i < childnode.Value.value.Count; i++)
+                                                {
+                                                    if (i == 0)
+                                                    {
+                                                        objVendor.GrossRevenue3 = childnode.Value.value[i].value_1_value.value.Value;
+                                                        objVendor.GrossYear3 = childnode.Value.value[i].value_0_value.value.Value;
+                                                    }
+                                                    else if (i == 1)
+                                                    {
+                                                        objVendor.GrossRevenue2 = childnode.Value.value[i].value_1_value.value.Value;
+                                                        objVendor.GrossYear2 = childnode.Value.value[i].value_0_value.value.Value;
+                                                    }
+                                                    else if (i == 2)
+                                                    {
+                                                        objVendor.GrossRevenue1 = childnode.Value.value[i].value_1_value.value.Value;
+                                                        objVendor.GrossYear1 = childnode.Value.value[i].value_0_value.value.Value;
+                                                    }
+                                                }
+                                            }
+                                            catch
+                                            {
+
+                                            }
+                                            break;
+                                        case "business_structure":
+                                            string business;
+                                            try { business = childnode.Value.value.Value; } catch { business = string.Empty; }
+                                            if (business == "sole")
+                                            {
+                                                objVendor.Proprietorship = true;
+                                            }
+                                            else if (business == "Partnership")
+                                            {
+                                                objVendor.Partnership = true;
+                                            }
+                                            else if (business == "Corporation")
+                                            {
+                                                objVendor.Corporation = true;
+                                            }
+                                            else if (business == "Limited Liability Partnership" || business == "Limited Liability Corporation")
+                                            {
+                                                objVendor.LLCLLP = true;
+                                            }
+                                            break;
+                                        case "business_type":
+
+                                            try
+                                            {
+                                                if (childnode.Value.value.Value == "Certified Rehabilitation Center or Extended Employment Provider")
+                                                {
+                                                    objVendor.Rehabilitation = true;
+                                                    objVendor.NonProfit = true;
+                                                    objVendor.Proprietorship = false;
+                                                    objVendor.Partnership = false;
+                                                    objVendor.LLCLLP = false;
+                                                    objVendor.Corporation = false;
+                                                }
+                                            }
+                                            catch { }
+                                            break;
+                                        case "owners":
+                                            foreach (dynamic ownerNode in childnode.Value)
+                                            {
+                                                JsonSchema.Owners objOwner = new JsonSchema.Owners();
+                                                try { objOwner.OwnerUUID = ownerNode.Value.uuid.value.Value; } catch { objOwner.OwnerUUID = string.Empty; }
+                                                try { objOwner.FirstName = ownerNode.Value.first_name.value.Value; } catch { objOwner.FirstName = string.Empty; }
+                                                try { objOwner.LastName = ownerNode.Value.last_name.value.Value; } catch { objOwner.LastName = string.Empty; }
+                                                try { objOwner.Address = ownerNode.Value.address.value.address_line1.Value + " " + ownerNode.Value.address.value.address_line2.Value; } catch { objOwner.Address = string.Empty; }
+                                                try { objOwner.City = ownerNode.Value.address.value.locality.Value; } catch { objOwner.City = string.Empty; }
+                                                try { objOwner.State = ownerNode.Value.address.value.administrative_area.Value; } catch { objOwner.State = string.Empty; }
+                                                try { objOwner.ZipCode = ownerNode.Value.address.value.postal_code.Value; } catch { objOwner.ZipCode = string.Empty; }
+                                                try { objOwner.Phone = ownerNode.Value.phone_primary.value.Value; } catch { objOwner.Phone = string.Empty; }
+                                                try { objOwner.OtherPhone = ownerNode.Value.phone_secondary.value.Value; } catch { objOwner.OtherPhone = string.Empty; }
+                                                try { objOwner.PercentageOwnership = ownerNode.Value.percentage_owned.value.Value; } catch { objOwner.PercentageOwnership = 0; }
+                                                bool PermanentResident = false;
+                                                try
+                                                {
+                                                    if (ownerNode.Value.permanent_resident != null)
+                                                    {
+
+                                                        if (ownerNode.Value.permanent_resident.value.Value == "1")
+                                                        {
+                                                            PermanentResident = true;
+                                                        }
+
+                                                    }
+                                                }
+                                                catch { }
+                                                bool USCitizen = false;
+                                                try
+                                                {
+                                                    if (ownerNode.Value.us_citizen.value.Value != null)
+                                                    {
+                                                        if (ownerNode.Value.us_citizen.value.Value == "1")
+                                                        {
+                                                            USCitizen = true;
+                                                        }
+                                                    }
+                                                }
+                                                catch { }
+                                                if (PermanentResident || USCitizen)
+                                                {
+                                                    objOwner.Citizen = true;
+                                                    if (ownerNode.Value.ethnicity.value.Value == "Asian-Pacific Americans" || ownerNode.Value.ethnicity.value.Value == "Subcontinent Asian Americans")
+                                                    {
+                                                        objOwner.Asian = true;
+                                                    }
+                                                    if (ownerNode.Value.ethnicity.value.Value == "Black American")
+                                                    {
+                                                        objOwner.Black = true;
+                                                    }
+                                                    if (ownerNode.Value.ethnicity.value.Value == "Hispanic American")
+                                                    {
+                                                        objOwner.Hispanic = true;
+                                                    }
+                                                    if (ownerNode.Value.ethnicity.value.Value == "Native American")
+                                                    {
+                                                        objOwner.AmericanIndian = true;
+                                                        objOwner.IndiginousAmerican = true;
+                                                        objOwner.TribalID = ownerNode.Value.tribal_id_number.value.Value;
+                                                    }
+                                                }
+                                                try
+                                                {
+                                                    if (ownerNode.Value.shares_of_stock != null)
+                                                    {
+                                                        if (ownerNode.Value.shares_of_stock.value.value_0_value.label.Value == "Number")
+                                                            objOwner.NoOfSharesOwned = ownerNode.Value.shares_of_stock.value.value_0_value.value.Value;
+                                                    }
+                                                }
+                                                catch { objOwner.NoOfSharesOwned = string.Empty; }
+                                                try { objOwner.CurrentPosition = ownerNode.Value.title.value.Value; } catch { objOwner.CurrentPosition = string.Empty; }
+                                                JsonSchema.SecondaryFirms objSecondaryFirms = new JsonSchema.SecondaryFirms();
+                                                try
+                                                {
+                                                    if (ownerNode.Value.own_other_explain != null)
+                                                    {
+                                                        for (int i = 0; i < ownerNode.Value.own_other_explain.value.Count; i++)
+                                                        {
+                                                            try { objSecondaryFirms.FirmName = ownerNode.Value.own_other_explain.value[i].value_0_value.value.Value; } catch { objSecondaryFirms.FirmName = string.Empty; }
+                                                            try { objSecondaryFirms.FirmAddress = ownerNode.Value.own_other_explain.value[i].value_1_value.value.Value; } catch { objSecondaryFirms.FirmAddress = string.Empty; }
+                                                            try { objSecondaryFirms.FirmPercentageOwnership = ownerNode.Value.own_other_explain.value[i].value_2_value.value.Value; } catch { objSecondaryFirms.FirmPercentageOwnership = 0; }
+                                                            try { objSecondaryFirms.FirmGrossRevenue = ownerNode.Value.own_other_explain.value[i].value_3_value.value.Value; } catch { objSecondaryFirms.FirmGrossRevenue = "0"; }
+                                                            objOwner.SecondaryFirm.Add(objSecondaryFirms);
+                                                        }
+                                                    }
+                                                }
+                                                catch { }
+                                                objVendor.owner.Add(objOwner);
+                                                // objVendor.owner.Add(new JsonSchema.Owners() {Address=objOwner.Address,AmericanIndian=objOwner.AmericanIndian,Asian=objOwner.Asian,Black=objOwner.Black,Citizen=objOwner.Citizen,City=objOwner.City,CurrentAsset=objOwner.CurrentAsset,CurrentPosition=objOwner.CurrentPosition,CurrentResponsibilities=objOwner.CurrentResponsibilities,CurrentSalary=objOwner.CurrentSalary,Eskimos=objOwner.Eskimos,FirstName=objOwner.FirstName,Hispanic=objOwner.Hispanic,IndiginousAmerican=objOwner.IndiginousAmerican,LastName=objOwner.LastName,MiddleName=objOwner.MiddleName,NativeHawaiians=objOwner.NativeHawaiians,NoOfSharesOwned=objOwner.NoOfSharesOwned,OtherPhone=objOwner.OtherPhone,OwnerUUID=objOwner.OwnerUUID,PercentageOwnership=objOwner.PercentageOwnership,PersonalNetworth=objOwner.PersonalNetworth,PersonalNetworthYear=objOwner.PersonalNetworthYear,Phone=objOwner.Phone,PhysicallyDisabled=objOwner.PhysicallyDisabled,RelevantExperience=objOwner.RelevantExperience,SecondaryFirm=objOwner.SecondaryFirm,ServiceDisabledVeteran=objOwner.ServiceDisabledVeteran,SignedApp=objOwner.SignedApp,SignedShares=objOwner.SignedShares,State=objOwner.State,Title=objOwner.Title,TotalLiabilities=objOwner.TotalLiabilities,TribalID=objOwner.TribalID,Veteran=objOwner.Veteran,Woman=objOwner.Woman,YearsofEducation=objOwner.YearsofEducation,YearsofExperience=objOwner.YearsofExperience,ZipCode=objOwner.ZipCode});
+                                            }
+                                            //JsonSchema.Owners objOwner = new JsonSchema.Owners();
+                                            break;
+                                    }
+                                }
+                                catch (Exception exc)
+                                {
+                                    this.WriteToFile(exc.Message.ToString().Length >= 250 ? exc.Message.ToString().Substring(0, 249).Replace('\'', '\"').TrimEnd('.') : exc.Message.ToString().Replace('\'', '\"').TrimEnd('.'), "Error");
+                                }
+                            }
+                        }
+                        if (objVendor.VendorName == string.Empty)
+                        {
+                            objVendor.VendorName = objVendor.LegalFirmName;
+                        }
+                        //Add each application to the list
+                        objApplications.ApplicationList.Add(objVendor);
+                        this.WriteToFile("Application list successfully serialized {0}", "Log");
+                        
+                    }
+                    catch (Exception exc)
+                    {
+                        this.WriteToFile(exc.Message.ToString().Length >= 250 ? exc.Message.ToString().Substring(0, 249).Replace('\'', '\"').TrimEnd('.') : exc.Message.ToString().Replace('\'', '\"').TrimEnd('.'), "Error");
+                    }
+                }
+            }
+            return objApplications;
+        }
+
+        private void WriteToFile(string text,string logType)
+        {
+            string path;
+            if (logType == "Error")
+            {
+                path = ConfigurationManager.AppSettings["ErrorPath"] + DateTime.Now.ToString("yyyyMdd") + ".txt";
+            }
+            else 
+            {
+                path = ConfigurationManager.AppSettings["LogPath"] + DateTime.Now.ToString("yyyyMdd") + ".txt";
+            }
+            using (StreamWriter writer = new StreamWriter(path, true))
+            {
+                writer.WriteLine(string.Format(text, DateTime.Now.ToString("dd/MM/yyyy hh:mm:ss tt")));
+                writer.Close();
+            }
+
+        }
+
+    }
+
+   
+}

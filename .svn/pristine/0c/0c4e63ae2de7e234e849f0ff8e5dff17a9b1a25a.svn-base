@@ -1,0 +1,35 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<configuration>
+    <startup> 
+        <supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.5.2" />
+    </startup>
+  <connectionStrings>
+    <!--<add name="vmpconStr" connectionString="Data Source=MMD-MN-1793203;Initial Catalog=vmpUAT;User ID=VMPNewUser;Password=Nithil84" providerName="System.Data.SqlClient" />-->
+    <add name="vmpconStr" connectionString="Data Source=G02TDWMSQL001.admin.state.mn.us;Initial Catalog=vmpStage;User ID=vmpuser;Password=vmpU$3r!" providerName="System.Data.SqlClient" />
+    <!--<add name="vmpconStr" connectionString="Data Source=G02TDWMSQL001.admin.state.mn.us;Initial Catalog=vmp;User ID=vmpuser;Password=vmpU$3r!" providerName="System.Data.SqlClient"  />-->
+    <!--<add name="vmpconStr" connectionString="Data Source=G02TDWMSQL001.admin.state.mn.us;Initial Catalog=vmp;User ID=vmpuser;Password=vmpU$3r!" providerName="System.Data.SqlClient"  />-->
+  </connectionStrings>
+  <appSettings>
+    <add key ="Interval" value ="180000"/>
+    <add key ="PortalJsonURL" value ="http://test-aaimacd.pantheonsite.io/api/application?_format=json"/>
+    <add key ="ByteArray" value ="state:2600"/>
+    <add key ="JsonFilePath" value ="C:\\json\\"/>
+    <add key ="JsonFileName" value ="PortalResponse_"/>
+    <add key ="LogPath" value ="C:\\Log\\"/>
+    <add key ="LogFileName" value ="ServiceLog_"/>
+    <add key ="ErrorPath" value ="C:\\Log\\"/>
+    <add key ="ErrorFileName" value ="ErrorLog_"/>
+    <add key ="AttachmentPath" value ="C:\\VMPPortalBatchService\\VMPPortalBatchService\\Attachment"/>
+    <add key ="PurgeFilesDuration" value ="-30"/>
+    <add key ="DeleteAppDuration" value ="2"/>
+    <add key="SmtpClient" value="Edge.ead.state.mn.us" />
+    <add key="FromEmailAddress" value="VMPWindowsService@state.mn.us" />
+    <add key="ToEmailAddress" value="elam.nandagopalan@state.mn.us,sathvik.subrahmanya@state.mn.us" />
+    <add key="ToEmailAddressMnit" value="elam.nandagopalan@state.mn.us,sathvik.subrahmanya@state.mn.us" />
+    <add key="EmailPort" value="25" />
+    <add key="EnableSSL" value="true" />
+    <add key="EmailSubject" value="New Application(s) Received from Portal" />
+    <add key="ErrorEmailSubject" value="VMP Windows Service Error !!! " />
+    <add key="EmailBody" value=" New Application(s) received from Portal. Please logon to VMP Admin portal for more details." />
+  </appSettings>
+</configuration>

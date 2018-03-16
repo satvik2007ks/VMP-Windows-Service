@@ -1,0 +1,22 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<configuration>
+    <startup> 
+        <supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.5.2" />
+    </startup>
+  <connectionStrings>
+    <!--<add name="vmpconStr" connectionString="Data Source=MMD-MN-1793203;Initial Catalog=vmpUAT;User ID=VMPNewUser;Password=Nithil84" providerName="System.Data.SqlClient" />-->
+    <add name="vmpconStr" connectionString="Data Source=G02TDWMSQL001.admin.state.mn.us;Initial Catalog=vmpStage;User ID=vmpuser;Password=vmpU$3r!" providerName="System.Data.SqlClient" />
+    <!--<add name="vmpconStr" connectionString="Data Source=G02TDWMSQL001.admin.state.mn.us;Initial Catalog=vmp;User ID=vmpuser;Password=vmpU$3r!" providerName="System.Data.SqlClient"  />-->
+    <!--<add name="vmpconStr" connectionString="Data Source=G02TDWMSQL001.admin.state.mn.us;Initial Catalog=vmp;User ID=vmpuser;Password=vmpU$3r!" providerName="System.Data.SqlClient"  />-->
+  </connectionStrings>
+  <appSettings>
+    <add key ="Mode" value ="Daily"/>
+    <!-- Interval value in Milliseconds-->
+    <add key ="Interval" value ="60000"/>
+    <add key ="PortalJsonURL" value ="http://test-aaimacd.pantheonsite.io/api/application?_format=json"/>
+    <add key ="ByteArray" value ="state:2600"/>
+    <add key ="JsonFilePath" value ="C:\\json\\PortalResponse_"/>
+    <add key ="LogPath" value ="C:\\Log\\ServiceLog_"/>
+    <add key ="ErrorPath" value ="C:\\Log\\ErrorLog_"/>
+  </appSettings>
+</configuration>
